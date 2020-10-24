@@ -1,0 +1,281 @@
+/*********
+  Rui Santos
+  Complete project details at https://RandomNerdTutorials.com/esp32-web-server-sent-events-sse/
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files.
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+*********/
+/*
+adapted by diy_bloke to have dynamic icons, an extra card and static IP
+*/
+#include <ESP8266WiFi.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <Adafruit_BME280.h>
+#include <Adafruit_Sensor.h>
+
+ADC_MODE(ADC_VCC); // Switch from ADC to Vcc readout.
+
+// Replace with your network credentials
+const char* ssid = "TYourSSID";
+const char* password = "yourPW";
+//set up for Static IP
+IPAddress ip(192, 168, 1, 60); // pick your own IP outside the DHCP range of your router
+IPAddress gateway(192, 168, 1, 1); //watch out, these are comma's not dots
+IPAddress subnet(255, 255, 255, 0);
+IPAddress dns(192, 168, 1, 1);
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+// Create an Event Source on /events
+AsyncEventSource events("/events");
+
+// Timer variables
+unsigned long lastTime = 0;
+unsigned long timerDelay = 10000;
+
+// Create a sensor object
+Adafruit_BME280 bme;         // BME280 connect to ESP8266 (GPIO4[D2]=SDA, GPIO5[D1] = SCL)
+
+float temperature;// variable holding BME readout
+float Ftemperature;
+float humidity;// variable holding BME readout
+float pressure;// variable holding BME readout
+float voltage;// variable holding Vcc readout
+
+// Init BME280
+void initBME() {
+  if (!bme.begin(0x76)) {
+    Serial.println("Could not find a valid BME280 sensor, check wiring!");
+    while (1);
+  }
+}
+
+void getSensorReadings() {
+  temperature =  bme.readTemperature();
+  // Convert temperature to Fahrenheit
+  Ftemperature = 1.8 * temperature + 32;
+  humidity =  bme.readHumidity();
+  pressure =  bme.readPressure()/ 100.0F;
+  voltage  = ESP.getVcc() / 1023.0F;
+}
+
+// Initialize WiFi
+void initWiFi() {
+  wifi_station_set_hostname("BME280");
+  WiFi.mode(WIFI_STA);
+  WiFi.config(ip, dns, gateway, subnet);
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi ..");
+  // while (WiFi.status() != WL_CONNECTED) {
+  //    Serial.print('.');
+  //    delay(1000);
+  //-----
+  if (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    Serial.printf("WiFi Failed!\n");
+    return;
+    //---
+  }
+  Serial.println(" ");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+}
+
+String processor(const String& var) {
+  getSensorReadings();
+  Serial.println(var);
+  if (var == "TEMPERATURE") {
+    return String(temperature);
+  }
+  else if (var == "HUMIDITY") {
+    return String(humidity);
+  }
+  else if (var == "PRESSURE") {
+    return String(pressure);
+  }
+  //---
+  else if (var == "VOLTAGE") {
+    return String(voltage);
+  }
+  //---
+  else if (var == "FTEMPERATURE") {
+    return String(Ftemperature);
+  }
+  //----
+}
+
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+<meta charset="utf-8"/>
+  <title>ESP Web Server</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
+  <link rel="icon" href="data:,">
+  <style>
+    html {font-family: Arial; display: inline-block; text-align: center;}
+    p { font-size: 1.2rem;}
+    body {  margin: 0;}
+    .topnav { overflow: hidden; background-color: #50B8B4; color: white; font-size: 1rem; }
+    .content { padding: 20px; }
+    .card { background-color: white; box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5); }
+    .cards { max-width: 800px; margin: 0 auto; display: grid; grid-gap: 2rem; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+    .reading { font-size: 1.4rem; }
+  </style>
+</head>
+<body>
+  <div class="topnav">
+    <h1>Weather</h1>
+  </div>
+  <div class="content">
+    <div class="cards">
+      <div class="card">
+        <p><span id="warm"><i class="fas fa-thermometer-half" style="color:#059e8a;"></i></span> Temperature</p><p><span class="reading"><span id="temp">%TEMPERATURE%</span> &deg;C</span>/<span class="reading"><span id="Ftemp">%FTEMPERATURE%</span> &deg;F</span></p>
+      </div>
+      <div class="card">
+        <p><i class="fas fa-tint" style="color:#00add6;"></i> Humidity</p><p><span class="reading"><span id="hum">%HUMIDITY%</span> &percnt;</span></p>
+      </div>
+      <div class="card">
+        <p><span id="druk"><i class="fas fa-angle-double-down" style="color:#ff0000;"></i></span> Pressure</p><p><span class="reading"><span id="pres">%PRESSURE%</span> hPa</span></p>
+      </div>
+<div class="card">
+        <p><span id="batt"><i class="fas fa-battery-three-quarters" style="color:#f03793;"></i></span> Spanning</p><p><span class="reading"><span id="volt">%VOLTAGE%</span> V</span></p>
+      </div>
+    </div>
+  </div>
+<script>
+if (!!window.EventSource) {
+ var source = new EventSource('/events');
+
+ source.addEventListener('open', function(e) {
+  console.log("Events Connected");
+ }, false);
+
+ source.addEventListener('error', function(e) {
+  if (e.target.readyState != EventSource.OPEN) {
+    console.log("Events Disconnected");
+  }
+ }, false);
+
+ source.addEventListener('message', function(e) {
+  console.log("message", e.data);
+ }, false);
+
+ source.addEventListener('temperature', function(e) {
+  console.log("temperature", e.data);
+  document.getElementById("temp").innerHTML = e.data;
+ }, false);
+
+ source.addEventListener('Ftemperature', function(e) {
+  console.log("Ftemperature", e.data);
+  document.getElementById("Ftemp").innerHTML = e.data;
+ }, false);
+
+
+ source.addEventListener('humidity', function(e) {
+  console.log("humidity", e.data);
+  document.getElementById("hum").innerHTML = e.data;
+ }, false);
+
+ source.addEventListener('pressure', function(e) {
+  console.log("pressure", e.data);
+  document.getElementById("pres").innerHTML = e.data;//stuurt data naar webserver
+ }, false);
+
+source.addEventListener('voltage', function(e) {
+  console.log("voltage", e.data);
+  document.getElementById("volt").innerHTML = e.data;
+ }, false);
+
+ source.addEventListener('kleur', function(e) {
+  console.log("kleur", e.data);
+  document.getElementById("druk").innerHTML = e.data;
+ }, false);
+
+ source.addEventListener('batt', function(e) {
+  console.log("voltage", e.data);
+  document.getElementById("batt").innerHTML = e.data;
+ }, false);
+
+ source.addEventListener('warm', function(e) {
+  console.log("warm", e.data);
+  document.getElementById("warm").innerHTML = e.data;
+ }, false);
+
+}
+</script>
+</body>
+</html>)rawliteral";
+
+void setup() {
+  Serial.begin(115200);
+  initWiFi();
+  initBME();
+
+
+  // Handle Web Server
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  // Handle Web Server Events
+  events.onConnect([](AsyncEventSourceClient * client) {
+    if (client->lastId()) {
+      Serial.printf("Client reconnected! Last message ID that it got is: %u\n", client->lastId());
+    }
+    // send event with message "hello!", id current millis
+    // and set reconnect delay to 1 second
+    client->send("hello!", NULL, millis(), 10000);
+  });
+  server.addHandler(&events);
+  server.begin();
+}
+
+void loop() {
+  if ((millis() - lastTime) > timerDelay) {
+    getSensorReadings();
+    Serial.printf("Temperature = %.2f ºC \n", temperature);
+    Serial.printf("Temperature = %.2f ºF \n", Ftemperature);
+    Serial.printf("Humidity = %.2f % \n", humidity);
+    Serial.printf("Pressure = %.2f hPa \n", pressure);
+    Serial.printf("Voltage = %.1f V \n", voltage);
+    Serial.println();
+
+    // Send Events to the Web Server with the Sensor Readings makes sure the server is automatically updated
+    events.send("ping", NULL, millis());
+    events.send(String(temperature).c_str(), "temperature", millis());
+    events.send(String(Ftemperature).c_str(), "Ftemperature", millis());
+    events.send(String(humidity).c_str(), "humidity", millis());
+    events.send(String(pressure).c_str(), "pressure", millis());
+    //changing icon and color event for pressure
+    //do not mix up single and double quotes
+    if (pressure < 1013) {
+      events.send("<i class='fas fa-angle-down' style='color:#00add6;'></i>", "kleur", millis());
+       }else{
+        events.send("<i class='fas fa-angle-double-down' style='color:#00add6;'></i>", "kleur", millis());
+    }
+    //voltage
+    events.send(String(voltage).c_str(), "voltage", millis());
+    if (voltage < 3 && voltage > 2.7) {
+      events.send("<i class='fas fa-battery-half' style='color:#ff0000;'></i>", "batt", millis());
+    }
+    if (voltage <= 2.7) {
+      events.send("<i class='fas fa-battery-empty' style='color:#ff00cc;'></i>", "batt", millis());
+    }
+    if (voltage >=3){
+      events.send("<i class='fas fa-battery-three-quarters' style='color:#ffffcc;'></i>", "batt", millis());
+    }
+    //changing icon and color event for temperature
+    if (temperature <10) {
+      events.send("<i class='fas fa-thermometer-quarter' style='color:#0000ff;'></i>","warm", millis());
+    }else{
+      events.send("<i class='fas fa-thermometer-half' style='color:#059e8a;'></i>","warm", millis());
+    }
+    // ----------------------------
+    lastTime = millis();
+  }
+}
